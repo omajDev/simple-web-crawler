@@ -2,72 +2,111 @@ package main
 
 import (
 	"fmt"
-	"sync"
+	"net/http"
+	"strings"
+
+	"golang.org/x/net/html"
 )
 
-type (
-	Observable interface {
-		Add(observer Observer)
-		Notify(event interface{})
-		Remove(event interface{})
-	}
-
-	Observer interface {
-		NotifyCallback(event interface{})
-	}
-
-	WatchTower struct {
-		observer sync.Map
-	}
-
-	Soldier struct {
-		id   int
-		zone string
-	}
-)
-
-func (wt *WatchTower) Add(observer Observer) {
-	wt.observer.Store(observer, struct{}{})
-}
-
-func (wt *WatchTower) Remove(observer Observer) {
-	wt.observer.Delete(observer)
-}
-
-func (wt *WatchTower) Notify(event interface{}) {
-	wt.observer.Range(func(key, value interface{}) bool {
-		if key == nil {
-			return false
+// Helper function to pull the href attribute from a Token
+func getHref(t html.Token) (ok bool, href string) {
+	// Iterate over token attributes until we find an "href"
+	for _, a := range t.Attr {
+		if a.Key == "href" {
+			href = a.Val
+			ok = true
 		}
+	}
 
-		key.(Observer).NotifyCallback(event)
-		return true
-	})
+	// "bare" return will return the variables (ok, href) as
+	// defined in the function definition
+	return
 }
 
-func (s Soldier) NotifyCallback(event interface{}) {
-	if event.(string) == s.zone {
-		fmt.Printf("Soldier %d, seen an enemy on zone %s\n", s.id, event)
+// Extract all http** links from a given webpage
+func crawl(url string, ch chan string, chFinished chan bool) {
+	resp, err := http.Get(url)
+
+	defer func() {
+		// Notify that we're done after this function
+		chFinished <- true
+	}()
+
+	if err != nil {
+		fmt.Println("ERROR: Failed to crawl:", url)
+		return
+	}
+
+	b := resp.Body
+	defer b.Close() // close Body when the function completes
+
+	z := html.NewTokenizer(b)
+
+	for {
+		tt := z.Next()
+
+		switch {
+		case tt == html.ErrorToken:
+			// End of the document, we're done
+			return
+		case tt == html.StartTagToken:
+			t := z.Token()
+
+			// Check if the token is an <a> tag
+			isAnchor := t.Data == "a"
+			if !isAnchor {
+				continue
+			}
+
+			// Extract the href value, if there is one
+			ok, url := getHref(t)
+			if !ok {
+				continue
+			}
+
+			// Make sure the url begines in http**
+			hasProto := strings.Index(url, "http") == 0
+			if hasProto {
+				ch <- url
+			}
+		}
 	}
 }
 
 func main() {
-	watchTower := WatchTower{}
-	soldier_1 := Soldier{id: 1, zone: "B"}
-	soldier_2 := Soldier{id: 2, zone: "A"}
+	foundUrls := make(map[string]bool)
+	seedUrls := []string{
+		"https://markmcgranaghan.com",
+		"https://github.com/mmcgrana/gobyexample",
+		"https://github.com/mmcgrana/gobyexample#license",
+		"http://golang.org",
+	}
 
-	watchTower.Add(soldier_1)
-	watchTower.Add(soldier_2)
+	// Channels
+	chUrls := make(chan string)
+	chFinished := make(chan bool)
 
-	// Notify Zone A
-	watchTower.Notify("A")
+	// Kick off the crawl process (concurrently)
+	for _, url := range seedUrls {
+		go crawl(url, chUrls, chFinished)
+	}
 
-	// Notify Zone B
-	watchTower.Notify("B")
+	// Subscribe to both channels
+	for c := 0; c < len(seedUrls); {
+		select {
+		case url := <-chUrls:
+			foundUrls[url] = true
+		case <-chFinished:
+			c++
+		}
+	}
 
-	// Remove soldier 1 (No soldier on Zome B anymore)
-	watchTower.Remove(soldier_1)
+	// We're done! Print the results...
+	fmt.Printf("\nFound %d unique urls:\n", len(foundUrls))
 
-	// Notify Zone B (Enemy is free to pass here)
-	watchTower.Notify("B")
+	for url := range foundUrls {
+		fmt.Println(" - " + url)
+	}
+
+	close(chUrls)
 }
