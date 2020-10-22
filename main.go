@@ -31,14 +31,16 @@ func crawl(link string, client *http.Client, f func(n *html.Node)) {
 
 func main() {
 	const maxWorker = 5
-	isVisted := make(map[string]struct{})
 	seedUrls := []string{
 		"https://en.wikipedia.org/wiki",
 		"https://blog.hubspot.com/",
 	}
+
+	isVisted := make(map[string]struct{})
 	var client http.Client
 	ch := make(chan string, maxWorker)
 	defer close(ch)
+
 	var f func(n *html.Node)
 	f = func(n *html.Node) {
 		for c := n; c != nil; c = c.NextSibling {
@@ -50,6 +52,7 @@ func main() {
 				for _, a := range c.Attr {
 					if a.Key == "href" {
 						ch <- a.Val
+						break
 					}
 				}
 			}
